@@ -1,0 +1,36 @@
+# ===== Configurare agent facturi =====
+# Linii de forma CHEIE=valoare. Ce incepe cu # e comentariu.
+
+# Folderul in care pui extrasele (relativ la acest folder sau cale completa,
+# ex: C:\Users\Eu\Documents\Extrase)
+FOLDER=extrase
+INTERVAL_SECUNDE=5
+
+# Ce tranzactii iau in calcul pentru firmele din firme.txt:
+#   incasare = banii primiti DE LA firma (cazul clasic: tu ii facturezi)
+#   plata    = banii trimisi CATRE firma
+#   toate    = ambele
+DIRECTIE=incasare
+
+# ----- Datele tale (furnizorul de pe factura) -----
+FURNIZOR_NUME=Firma Mea SRL
+FURNIZOR_CUI=RO12345678
+FURNIZOR_REG_COM=J40/1234/2020
+FURNIZOR_ADRESA=Str. Exemplu nr. 1, București
+FURNIZOR_IBAN=RO49AAAA1B31007593840000
+FURNIZOR_BANCA=Banca Transilvania
+
+# ----- Factura -----
+SERIE=FCT
+# numarul primei facturi; apoi agentul numara singur (tine minte in extrase/.stare_agent.json)
+NUMAR_START=1
+MONEDA=RON
+# 21 = cota standard din aug. 2025; pune 0 daca nu esti platitor de TVA
+COTA_TVA=21
+# da = suma din extras e cu TVA inclus (agentul scoate baza si TVA-ul din ea)
+SUMELE_INCLUD_TVA=da
+ZILE_SCADENTA=0
+UM=buc
+# Textul fiecarei linii. Poti folosi {data}, {suma}, {detalii}
+DESCRIERE_LINIE=Servicii conform plată din {data}
+MENTIUNI=Factură emisă pe baza încasărilor din extrasul de cont.

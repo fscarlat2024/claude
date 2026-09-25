@@ -1,0 +1,4 @@
+# O firma pe linie:   Nume firma | CUI | Adresa | alte denumiri din extras (separate prin virgula)
+# Doar numele e obligatoriu. "Alte denumiri" ajuta cand banca scrie numele altfel
+# (ex: ALFATECH in loc de Alfa Tech). CUI-ul e cautat si el in descrierea platii.
+Alfa Tech SRL | RO11223344 | Str. Florilor 10, Cluj-Napoca | ALFATECH
