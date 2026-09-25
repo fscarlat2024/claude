@@ -1,6 +1,0 @@
-Data tranzactie;Data valuta;Descriere;Referinta tranzactiei;Debit;Credit;Sold contabil
-02.09.2026;02.09.2026;Incasare OP - ALFA TECH SRL CUI 11223344 contravaloare servicii august;REF001;;2.420,00;12.420,00
-05.09.2026;05.09.2026;Plata OP - ENEL ENERGIE factura 998877;REF002;350,75;;12.069,25
-10.09.2026;10.09.2026;Incasare OP - BETA CONSTRUCT SA avans;REF003;;5.000,00;17.069,25
-15.09.2026;15.09.2026;Incasare OP - ALFATECH mentenanta retea;REF004;;1.210,00;18.279,25
-20.09.2026;20.09.2026;Plata OP - Alfa Tech S.R.L. retur;REF005;100,00;;18.179,25

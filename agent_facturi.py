@@ -3,7 +3,7 @@
 Agent facturi din extrase bancare.
 
 Urmareste un folder (implicit ./extrase). Cand apare un extras nou
-(.csv, .xlsx sau .pdf), cauta in el toate tranzactiile cu firmele trecute
+PDF, cauta in el toate tranzactiile cu firmele trecute
 in firme.txt si genereaza pentru fiecare firma o factura PDF + un rezumat
 CSV cu platile gasite, direct in acelasi folder.
 
@@ -14,7 +14,6 @@ Pornire:
 
 import argparse
 import csv
-import io
 import json
 import logging
 import re
@@ -27,7 +26,7 @@ from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from pathlib import Path
 
 BAZA = Path(__file__).resolve().parent
-EXTENSII = {".csv", ".xlsx", ".pdf"}
+EXTENSII = {".pdf"}
 DOI_ZECIMALE = Decimal("0.01")
 
 log = logging.getLogger("agent_facturi")
@@ -227,51 +226,113 @@ def tranzactii_din_tabel(randuri: list) -> list:
     return rezultat
 
 
-def citeste_csv(cale: Path) -> list:
-    brut = cale.read_bytes()
-    for enc in ("utf-8-sig", "cp1250", "latin-1"):
-        try:
-            text = brut.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    try:
-        dialect = csv.Sniffer().sniff(text[:5000], delimiters=",;\t|")
-    except csv.Error:
-        dialect = csv.excel
-    return tranzactii_din_tabel(list(csv.reader(io.StringIO(text), dialect)))
+RE_SUMA = re.compile(r"^-?\d{1,3}(?:[.\s]\d{3})*,\d{2}$|^-?\d{1,3}(?:,\d{3})*\.\d{2}$|^-?\d+[.,]\d{2}$")
+RE_SUMA_TEXT = re.compile(r"-?\d{1,3}(?:[.\s]\d{3})*,\d{2}\b|-?\d+\.\d{2}\b")
+CUVINTE_INCASARE = ("incasare", "credit", "primit", "incoming", "transfer in")
+# randuri de total/sold din extras care NU sunt tranzactii (au sume in coloane, dar sunt totaluri)
+CUVINTE_TOTAL = ("sold", "rulaj", "total", "sume blocate", "balance")
 
 
-def citeste_xlsx(cale: Path) -> list:
-    import openpyxl
-    wb = openpyxl.load_workbook(cale, read_only=True, data_only=True)
-    tranzactii = []
-    for ws in wb.worksheets:
-        tranzactii += tranzactii_din_tabel([list(r) for r in ws.iter_rows(values_only=True)])
+def _linii_din_cuvinte(cuvinte: list, toleranta: float = 3) -> list:
+    """Grupeaza cuvintele PDF in linii (acelasi 'top'), sortate stanga -> dreapta."""
+    linii = []
+    for c in sorted(cuvinte, key=lambda w: (round(w["top"]), w["x0"])):
+        if linii and abs(linii[-1][0]["top"] - c["top"]) <= toleranta:
+            linii[-1].append(c)
+        else:
+            linii.append([c])
+    linii = [sorted(l, key=lambda w: w["x0"]) for l in linii]
+    # lipeste sumele scrise cu spatiu la mii: "2 420,00" -> "2420,00"
+    for linie in linii:
+        i = 0
+        while i < len(linie) - 1:
+            a, b = linie[i], linie[i + 1]
+            if (re.fullmatch(r"-?\d{1,3}", a["text"]) and re.fullmatch(r"\d{3}([.,]\d{2})?", b["text"])
+                    and b["x0"] - a["x1"] < 5):
+                linie[i] = {**a, "text": a["text"] + b["text"], "x1": b["x1"]}
+                del linie[i + 1]
+            else:
+                i += 1
+    return linii
+
+
+def _gaseste_coloane(linie: list) -> dict | None:
+    """Daca linia e capul de tabel, intoarce pozitia (centrul x) coloanelor numerice."""
+    coloane = {}
+    for w in linie:
+        n = normalizeaza(w["text"])
+        centru = (w["x0"] + w["x1"]) / 2
+        if n.startswith(CHEI_DEBIT):
+            coloane.setdefault("debit", centru)
+        elif n.startswith(CHEI_CREDIT):
+            coloane.setdefault("credit", centru)
+        elif n.startswith(("sold", "balance")):
+            coloane.setdefault("sold", centru)
+        elif n.startswith(CHEI_SUMA):
+            coloane.setdefault("suma", centru)
+    if any(RE_SUMA.match(w["text"]) for w in linie):
+        return None  # un cap de tabel nu contine sume
+    if "debit" in coloane and "credit" in coloane:
+        coloane.pop("suma", None)
+        return coloane
+    if "suma" in coloane and any(normalizeaza(w["text"]).startswith(CHEI_DATA) for w in linie):
+        return coloane
+    return None
+
+
+def _tranzactii_pe_coloane(pagini: list) -> list:
+    """
+    Citire dupa pozitia pe pagina - merge pe extrasele fara chenare (BT, BCR, ING...).
+    Ca un om care pune rigla pe capul de tabel: o suma aflata sub 'Credit' e incasare,
+    una sub 'Debit' e plata, una sub 'Sold' se ignora.
+    """
+    tranzactii, coloane, curenta, data_curenta = [], None, None, None
+    for cuvinte in pagini:
+        for linie in _linii_din_cuvinte(cuvinte):
+            gasite = _gaseste_coloane(linie)
+            if gasite:
+                coloane, curenta = gasite, None
+                continue
+            if not coloane:
+                continue
+
+            prag_stanga = min(coloane.values()) - 60  # sumele din descriere nu conteaza
+            sume, text = {}, []
+            d = parseaza_data(linie[0]["text"]) if RE_DATA.fullmatch(linie[0]["text"]) else None
+            for w in (linie[1:] if d else linie):
+                centru = (w["x0"] + w["x1"]) / 2
+                if RE_SUMA.match(w["text"]) and centru >= prag_stanga:
+                    col = min(coloane, key=lambda k: abs(coloane[k] - centru))
+                    sume[col] = parseaza_suma(w["text"])
+                elif not (RE_DATA.fullmatch(w["text"]) and not text):
+                    text.append(w["text"])
+            text = " ".join(text)
+            if d:
+                data_curenta = d
+
+            if normalizeaza(text).startswith(CUVINTE_TOTAL):
+                curenta = None  # sold / rulaj / total: nu e tranzactie
+                continue
+
+            suma, directie = None, None
+            if sume.get("credit"):
+                suma, directie = sume["credit"], "incasare"
+            elif sume.get("debit"):
+                suma, directie = sume["debit"], "plata"
+            elif sume.get("suma"):
+                suma, directie = sume["suma"], "incasare" if sume["suma"] > 0 else "plata"
+
+            if suma is not None and data_curenta:
+                curenta = Tranzactie(data_curenta, text, abs(suma), directie)
+                tranzactii.append(curenta)
+            elif curenta is not None and text and not d:
+                curenta.descriere += " " + text  # detaliile de pe randurile urmatoare
     return tranzactii
 
 
-RE_SUMA_TEXT = re.compile(r"-?\d{1,3}(?:[.\s]\d{3})*,\d{2}\b|-?\d+\.\d{2}\b")
-CUVINTE_INCASARE = ("incasare", "credit", "primit", "incoming", "transfer in")
-
-
-def citeste_pdf(cale: Path) -> list:
-    """Intai incearca tabelele din PDF; daca nu gaseste, citeste textul linie cu linie."""
-    import pdfplumber
-    tranzactii, linii = [], []
-    with pdfplumber.open(cale) as pdf:
-        tabel_total = []
-        for pagina in pdf.pages:
-            for tabel in pagina.extract_tables() or []:
-                tabel_total += tabel
-            linii += (pagina.extract_text() or "").splitlines()
-        tranzactii = tranzactii_din_tabel(tabel_total)
-    if tranzactii:
-        return tranzactii
-
-    # Fallback text: o linie care incepe cu o data deschide o tranzactie noua,
-    # liniile urmatoare fara data sunt detaliile ei.
-    blocuri = []
+def _tranzactii_din_text(linii: list) -> list:
+    """Ultima varianta: o linie care incepe cu o data deschide o tranzactie."""
+    tranzactii, blocuri = [], []
     for linie in linii:
         if RE_DATA.match(linie.strip()):
             blocuri.append([linie.strip()])
@@ -279,6 +340,8 @@ def citeste_pdf(cale: Path) -> list:
             blocuri[-1].append(linie.strip())
     for bloc in blocuri:
         text = " ".join(bloc)
+        if normalizeaza(RE_DATA.sub(" ", bloc[0])).startswith(CUVINTE_TOTAL):
+            continue
         fara_date = [RE_DATA.sub(" ", x) for x in (bloc[0], text)]  # "01.09" nu e suma
         sume = RE_SUMA_TEXT.findall(fara_date[0]) or RE_SUMA_TEXT.findall(fara_date[1])
         if not sume:
@@ -290,13 +353,32 @@ def citeste_pdf(cale: Path) -> list:
 
 
 def citeste_extras(cale: Path) -> list:
-    ext = cale.suffix.lower()
-    if ext == ".csv":
-        return citeste_csv(cale)
-    if ext == ".xlsx":
-        return citeste_xlsx(cale)
-    if ext == ".pdf":
-        return citeste_pdf(cale)
+    """
+    Citeste un extras PDF, in 3 trepte (se opreste la prima care gaseste ceva):
+      1. tabel cu chenare
+      2. coloane dupa pozitie (extrasele obisnuite, fara chenare)
+      3. text simplu, linie cu linie
+    """
+    import pdfplumber
+    tabel_total, pagini, linii = [], [], []
+    with pdfplumber.open(cale) as pdf:
+        for pagina in pdf.pages:
+            for tabel in pagina.extract_tables() or []:
+                tabel_total += tabel
+            pagini.append(pagina.extract_words(keep_blank_chars=False, x_tolerance=1.5))
+            linii += (pagina.extract_text() or "").splitlines()
+
+    if not any(pagini):
+        log.warning("  PDF-ul nu are text (e scanat/poza). Descarca extrasul din internet banking, nu scanat.")
+        return []
+
+    for metoda, citire in (("tabel", lambda: tranzactii_din_tabel(tabel_total)),
+                           ("coloane", lambda: _tranzactii_pe_coloane(pagini)),
+                           ("text", lambda: _tranzactii_din_text(linii))):
+        tranzactii = citire()
+        if tranzactii:
+            log.info("  citit prin metoda: %s", metoda)
+            return tranzactii
     return []
 
 
@@ -513,7 +595,7 @@ def proceseaza_extras(cale: Path, firme: list, cfg: dict, stare: Stare):
         return
     log.info("  %d tranzactii citite", len(tranzactii))
     if not tranzactii:
-        log.warning("  Nu am recunoscut nicio tranzactie. Verifica formatul (CSV/XLSX sunt cele mai sigure).")
+        log.warning("  Nu am recunoscut nicio tranzactie. Trimite-mi PDF-ul ca sa adaug formatul bancii tale.")
 
     directie = cfg.get("DIRECTIE", "incasare").lower()
     serie = cfg.get("SERIE", "FCT")
