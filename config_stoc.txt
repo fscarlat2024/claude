@@ -1,0 +1,47 @@
+# ===== Configurare agent stoc (furnizor -> website) =====
+# Linii CHEIE=valoare. Ce incepe cu # e comentariu.
+
+# verificare  = doar compara si face raport CSV (nu schimba nimic pe site) - incepe cu asta!
+# actualizare = pune si stocul nou pe site
+MOD=verificare
+INTERVAL_MINUTE=60
+FOLDER_RAPOARTE=rapoarte_stoc
+
+# ----- Furnizor (implicit ELKO) -----
+# Tokenul il iei din contul ELKO eCom / https://api.elko.cloud.
+# Verifica in pagina Swagger de acolo adresa exacta a metodei Catalog/Products.
+FURNIZOR_URL=https://api.elko.cloud/v3.0/api/Catalog/Products
+FURNIZOR_TOKEN=
+FURNIZOR_HEADER_TOKEN=Authorization
+FURNIZOR_PREFIX_TOKEN=Bearer
+# Unde e lista de produse in raspuns (gol = raspunsul e direct lista; ex: data.items)
+FURNIZOR_LISTA=
+# Paginare: numele parametrului de pagina (gol = totul vine dintr-o data)
+FURNIZOR_PARAM_PAGINA=
+FURNIZOR_PRIMA_PAGINA=1
+# Numele campurilor din raspuns. Ruleaza "python agent_stoc.py --test" ca sa le vezi pe cele reale.
+# Codul trebuie sa fie acelasi cu SKU-ul de pe site (de obicei codul producatorului sau codul ELKO).
+FURNIZOR_CAMP_COD=manufacturerCode
+FURNIZOR_CAMP_STOC=quantity
+FURNIZOR_CAMP_NUME=name
+
+# ----- Website -----
+# woocommerce sau shopify
+SITE_PLATFORMA=woocommerce
+SITE_URL=https://magazinul-meu.ro
+# WooCommerce: cheie + secret din WooCommerce > Setari > Avansat > REST API (drept Citire/Scriere)
+# Shopify: SITE_CHEIE = Admin API access token, SITE_SECRET ramane gol
+SITE_CHEIE=
+SITE_SECRET=
+# Shopify: id-ul locatiei (gol = prima locatie)
+SHOPIFY_LOCATIE=
+
+# ----- Reguli stoc -----
+# Daca SKU-urile de pe site au un prefix fata de codul furnizorului (ex: ELK-12345), scrie-l aici
+SKU_PREFIX=
+# Bucati scazute din stocul furnizorului (plasa de siguranta: stocul se misca intre verificari)
+STOC_REZERVA=0
+# Stocul maxim afisat pe site (0 = fara limita)
+STOC_MAXIM=0
+# Produs de pe site care NU mai apare la furnizor: ignora (il lasa cum e) sau zero (il pune pe 0)
+LIPSA_LA_FURNIZOR=ignora
