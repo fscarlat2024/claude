@@ -3,3 +3,5 @@ agent.log
 __pycache__/
 rapoarte_stoc/
 agent_stoc.log
+node_modules/
+.wrangler/

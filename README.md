@@ -108,3 +108,9 @@ Produsele fără SKU sau care nu există la furnizor apar în raport, ca să le 
 - stocurile de tipul „>10” sunt citite ca 10 (minimul sigur).
 
 Teste: `python -m pytest teste/test_agent_stoc.py` (simulează ELKO și WooCommerce, fără internet).
+
+---
+
+# Agent stoc și prețuri NOD → lengo.ro (Cloudflare Worker)
+
+Varianta care rulează în cloud, fără calculator pornit: vezi [`worker-stoc/README.md`](worker-stoc/README.md).

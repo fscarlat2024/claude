@@ -1,0 +1,61 @@
+name = "lengo-stoc"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+# O data pe ora, la minutul 17 (ora UTC; minutul nu conteaza)
+[triggers]
+crons = ["17 * * * *"]
+
+# Memoria agentului (ultimul raport, costurile vazute, preturile de aprobat).
+# Creezi o data cu:  npx wrangler kv namespace create STARE  si pui aici id-ul primit.
+[[kv_namespaces]]
+binding = "STARE"
+id = "PUNE_AICI_ID_UL_KV"
+
+[vars]
+# verificare = doar raport (nu schimba nimic pe site) | actualizare = pune stocul si pretul pe site
+MOD = "verificare"
+
+SITE_URL = "https://lengo.ro"
+# "da" doar daca hostingul blocheaza autentificarea normala (eroare 401 desi cheile sunt bune)
+WOO_CHEI_IN_URL = "nu"
+
+# ----- Politica de pret -----
+# pret = max(cost x (1 + adaos%), cost + MARJA_MINIMA) x (1 + TVA%), rotunjit la ,99
+TVA = "21"
+# adaos pe categorie de pe lengo.ro (numele exact al categoriei din WooCommerce)
+ADAOS_CATEGORII = '{"Laptopuri": 10}'
+# adaosul pentru orice alta categorie (accesorii)
+ADAOS_IMPLICIT = "30"
+MARJA_MINIMA = "25"
+ROTUNJIRE_99 = "da"
+# daca costul NOD sare cu mai mult de atat (%) intre doua verificari, pretul nu se aplica pana nu aprobi
+PRAG_SALT = "10"
+# preturi fixate de mana, pe SKU (agentul nu le calculeaza): '{"ABC-123": 199.99}'
+PRETURI_FIXE = '{}'
+
+# ----- Stoc -----
+# bucati scazute din stocul NOD (plasa de siguranta)
+STOC_REZERVA = "0"
+# stocul maxim afisat (0 = fara limita)
+STOC_MAXIM = "0"
+# daca SKU-urile de pe site au un prefix fata de codul NOD (ex: NOD-12345)
+SKU_PREFIX = ""
+
+# ----- NOD (provizoriu, pana primim documentatia API) -----
+NOD_URL = ""
+# json sau csv
+NOD_FORMAT = "json"
+# unde e lista de produse in raspunsul JSON (gol = raspunsul e direct lista)
+NOD_LISTA = ""
+NOD_CAMP_COD = "code"
+NOD_CAMP_STOC = "stock"
+# pretul de achizitie FARA TVA, in lei
+NOD_CAMP_PRET = "price"
+NOD_HEADER_TOKEN = "Authorization"
+
+# Secrete (NU se scriu aici - se pun cu "npx wrangler secret put NUME"):
+#   WOO_CHEIE      ck_... din WooCommerce > Setari > Avansat > REST API
+#   WOO_SECRET     cs_...
+#   RAPORT_PAROLA  parola pentru pagina de raport
+#   NOD_TOKEN      (daca API-ul NOD cere token)
