@@ -17,7 +17,7 @@ from reportlab.pdfgen import canvas
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import agent_facturi as af  # noqa: E402
 
-FIRMA = af.Firma("Alfa Tech SRL", "RO11223344", "", ("ALFATECH",))
+FIRMA = af.Firma("Alfa Tech SRL", "RO11223344", "", ("ALFATECH",))  # firma de test
 TMP = Path(tempfile.mkdtemp())
 
 
@@ -126,6 +126,82 @@ def test_tabel_cu_chenare():
     tr = af.citeste_extras(cale)
     assert [(t.directie, t.suma) for t in tr] == [("incasare", Decimal("2420.00")),
                                                    ("plata", Decimal("350.75"))]
+
+
+def pdf_wise(nume):
+    """Extras Wise: Description | Incoming | Outgoing | Amount (sold); data e sub descriere."""
+    cale = TMP / nume
+    c = canvas.Canvas(str(cale), pagesize=A4)
+    c.setFont(FONT, 8)
+    c.drawString(40, 800, "EUR statement  1 August 2026 - 30 September 2026")
+    for text, x in (("Description", 40), ("Incoming", 400), ("Outgoing", 470), ("Amount", 550)):
+        c.drawRightString(x, 760, text) if x > 300 else c.drawString(x, 760, text)
+    randuri = [
+        ("Received money from NET COMMUNICATIONS SYSTEMS SRL", "7,900.00", "", "7,900.00"),
+        ("with reference GROW-2026-08", "", "", ""),
+        ("31 August 2026 Transaction: TRANSFER-1111", "", "", ""),
+        ("Card transaction of 25.00 EUR issued by Google Workspace", "", "25.00", "7,875.00"),
+        ("2 September 2026 Transaction: CARD-2222", "", "", ""),
+        ("Received money from NET COMMUNICATION SYSTEMS S.R.L.", "1,000.00", "", "8,875.00"),
+        ("10 September 2026 Transaction: TRANSFER-3333", "", "", ""),
+        ("Received money from NET COMMUNICATIONS SYSTEMS SRL", "4,310.00", "", "13,185.00"),
+        ("25 September 2026 Transaction: TRANSFER-4444", "", "", ""),
+    ]
+    y = 744
+    for desc, inc, out, sold in randuri:
+        c.drawString(40, y, desc)
+        for text, x in ((inc, 400), (out, 470), (sold, 550)):
+            if text:
+                c.drawRightString(x, y, text)
+        y -= 12
+    c.save()
+    return cale
+
+
+NCS = af.Firma("NET COMMUNICATIONS SYSTEMS SRL", "RO34291656",
+               "Str. Samuil Vulcan 12D, corp A, et. 2, ap. birou 13; Sector 5, Bucharest 077160, Romania",
+               ("NET COMMUNICATION SYSTEMS",), "J40/3729/2015")
+
+
+def test_wise_date_cu_litere_si_sold_ignorat():
+    tr = af.citeste_extras(pdf_wise("wise.pdf"))
+    assert [(t.data.isoformat(), t.directie, t.suma) for t in tr] == [
+        ("2026-08-31", "incasare", Decimal("7900.00")),
+        ("2026-09-02", "plata", Decimal("25.00")),
+        ("2026-09-10", "incasare", Decimal("1000.00")),
+        ("2026-09-25", "incasare", Decimal("4310.00")),
+    ]
+    assert len(af.filtreaza(tr, NCS, "incasare")) == 3
+
+
+def test_factura_grow_o_factura_pe_luna():
+    import pdfplumber
+    folder = TMP / "grow"
+    folder.mkdir()
+    extras = folder / "wise_septembrie.pdf"
+    extras.write_bytes(pdf_wise("wise2.pdf").read_bytes())
+    cfg = af.citeste_config(af.BAZA / "config.exemplu.txt")
+    create = af.proceseaza_extras(extras, [NCS], cfg, af.Stare(folder / ".stare.json"))
+    assert [p.name for p in create] == ["Invoice_GROW202608.pdf", "Invoice_GROW202609.pdf"]
+
+    text = pdfplumber.open(create[1]).pages[0].extract_text()
+    for asteptat in ("Grow LLC", "INVOICE", "No. GROW-2026-09", "Issue date: September 30, 2026",
+                     "NET COMMUNICATIONS SYSTEMS SRL", "VAT / CUI: RO34291656",
+                     "Trade Register: J40/3729/2015", "IT services & marketing services",
+                     "September 2026", "Total 5,310.00 EUR", "IBAN: BE00 0000 0000 0000",
+                     "quote invoice number GROW-2026-09"):
+        assert asteptat in text, asteptat
+    assert "Google" not in (folder / "Invoice_GROW202609_plati.csv").read_text(encoding="utf-8-sig")
+
+    # a doua rulare nu suprascrie facturile existente
+    extras.touch()
+    assert af.proceseaza_extras(extras, [NCS], cfg, af.Stare(folder / ".stare.json")) == []
+
+
+def test_firme_txt():
+    firme = af.citeste_firme(af.BAZA / "firme.exemplu.txt")
+    assert [(f.nume, f.cui, f.reg_com) for f in firme] == [
+        ("NET COMMUNICATIONS SYSTEMS SRL", "RO34291656", "J40/3729/2015")]
 
 
 def test_pdf_scanat_nu_crapa():

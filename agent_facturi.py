@@ -2,14 +2,14 @@
 """
 Agent facturi din extrase bancare.
 
-Urmareste un folder (implicit ./extrase). Cand apare un extras nou
-PDF, cauta in el toate tranzactiile cu firmele trecute
-in firme.txt si genereaza pentru fiecare firma o factura PDF + un rezumat
-CSV cu platile gasite, direct in acelasi folder.
+Pui un extras PDF in folder (implicit ./extrase). Agentul cauta in el toate
+incasarile de la firmele din firme.txt si scrie langa extras factura in formatul
+Grow LLC (o factura pe luna, ex. Invoice_GROW202608.pdf) + un CSV cu platile gasite.
 
 Pornire:
+    Genereaza-Factura.ps1              # o data: proceseaza extrasele si iese
+    python agent_facturi.py --o-data   # acelasi lucru, direct
     python agent_facturi.py            # ruleaza continuu si asteapta extrase
-    python agent_facturi.py --o-data   # proceseaza ce e in folder si se opreste
 """
 
 import argparse
@@ -17,6 +17,7 @@ import csv
 import json
 import logging
 import re
+import shutil
 import sys
 import time
 import unicodedata
@@ -52,23 +53,41 @@ def citeste_config(cale: Path) -> dict:
 class Firma:
     nume: str
     cui: str = ""
-    adresa: str = ""
+    adresa: str = ""          # randurile adresei, separate prin ';'
     cuvinte_cheie: tuple = ()
+    reg_com: str = ""
 
 
 def citeste_firme(cale: Path) -> list:
-    """firme.txt: o firma pe linie -> Nume | CUI | Adresa | cuvant1, cuvant2"""
+    """
+    firme.txt: cate un bloc CHEIE=valoare pentru fiecare firma; fiecare bloc incepe cu NUME=.
+        NUME=NET COMMUNICATIONS SYSTEMS SRL
+        CUI=RO34291656
+        REG_COM=J40/3729/2015
+        ADRESA=Str. ... ; Sector 5, Bucharest 077160, Romania
+        ALIAS=NET COMMUNICATION SYSTEMS, NETCOM
+    """
     firme = []
     if not cale.exists():
         return firme
     for linie in cale.read_text(encoding="utf-8-sig").splitlines():
         linie = linie.strip()
-        if not linie or linie.startswith("#"):
+        if not linie or linie.startswith("#") or "=" not in linie:
             continue
-        parti = [p.strip() for p in linie.split("|")]
-        parti += [""] * (4 - len(parti))
-        cuvinte = tuple(c.strip() for c in parti[3].split(",") if c.strip())
-        firme.append(Firma(parti[0], parti[1], parti[2], cuvinte))
+        cheie, valoare = (x.strip() for x in linie.split("=", 1))
+        cheie = cheie.upper()
+        if cheie == "NUME":
+            firme.append(Firma(valoare))
+        elif not firme:
+            continue
+        elif cheie == "CUI":
+            firme[-1].cui = valoare
+        elif cheie == "REG_COM":
+            firme[-1].reg_com = valoare
+        elif cheie == "ADRESA":
+            firme[-1].adresa = valoare
+        elif cheie == "ALIAS":
+            firme[-1].cuvinte_cheie = tuple(c.strip() for c in valoare.split(",") if c.strip())
     return firme
 
 
@@ -119,6 +138,22 @@ def parseaza_suma(text) -> Decimal | None:
 
 FORMATE_DATA = ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d.%m.%y", "%Y/%m/%d")
 RE_DATA = re.compile(r"\b(\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{4}-\d{2}-\d{2})\b")
+# "31 August 2026", "31 aug. 2026", "Aug 31, 2026" (Wise, Revolut, extrase in engleza/romana)
+RE_DATA_TEXT = re.compile(r"\b(\d{1,2})\s+([A-Za-z]{3,10})\.?,?\s+(\d{4})\b"
+                          r"|\b([A-Za-z]{3,10})\.?\s+(\d{1,2}),?\s+(\d{4})\b")
+LUNI = {"jan": 1, "ian": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "mai": 5, "jun": 6, "iun": 6,
+        "jul": 7, "iul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+LUNI_EN = ("January", "February", "March", "April", "May", "June", "July", "August",
+           "September", "October", "November", "December")
+
+
+def _data_din_text(m) -> date | None:
+    zi, luna, an = (m.group(1), m.group(2), m.group(3)) if m.group(1) else (m.group(5), m.group(4), m.group(6))
+    nr_luna = LUNI.get(luna[:3].lower())
+    try:
+        return date(int(an), nr_luna, int(zi)) if nr_luna else None
+    except ValueError:
+        return None
 
 
 def parseaza_data(text) -> date | None:
@@ -128,25 +163,38 @@ def parseaza_data(text) -> date | None:
         return text
     if not text:
         return None
-    m = RE_DATA.search(str(text))
-    if not m:
-        return None
-    for fmt in FORMATE_DATA:
-        try:
-            return datetime.strptime(m.group(1), fmt).date()
-        except ValueError:
-            continue
-    return None
+    text = str(text)
+    candidati = []
+    m = RE_DATA.search(text)
+    if m:
+        for fmt in FORMATE_DATA:
+            try:
+                candidati.append((m.start(), datetime.strptime(m.group(1), fmt).date()))
+                break
+            except ValueError:
+                continue
+    for m in RE_DATA_TEXT.finditer(text):
+        d = _data_din_text(m)
+        if d:
+            candidati.append((m.start(), d))
+            break
+    return min(candidati)[1] if candidati else None
+
+
+def incepe_cu_data(text: str) -> bool:
+    text = text.strip()
+    if RE_DATA.match(text):
+        return True
+    m = RE_DATA_TEXT.match(text)
+    return bool(m and _data_din_text(m))
+
+
+def sterge_date(text: str) -> str:
+    return RE_DATA_TEXT.sub(" ", RE_DATA.sub(" ", text))
 
 
 def rotunjeste(x: Decimal) -> Decimal:
     return x.quantize(DOI_ZECIMALE, rounding=ROUND_HALF_UP)
-
-
-def format_ro(x: Decimal) -> str:
-    """1234.5 -> '1.234,50'"""
-    s = f"{rotunjeste(x):,.2f}"
-    return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 # --------------------------------------------------------------------------
@@ -159,11 +207,14 @@ class Tranzactie:
     descriere: str
     suma: Decimal        # mereu pozitiva
     directie: str        # "incasare" (bani primiti) sau "plata" (bani trimisi)
+    data_provizorie: bool = False  # data luata de la tranzactia de deasupra
 
 
 CHEI_DATA = ("data", "date")
-CHEI_DEBIT = ("debit", "iesiri", "plati")
-CHEI_CREDIT = ("credit", "intrari", "incasari")
+CHEI_DEBIT = ("debit", "iesiri", "plati", "outgoing", "withdraw")
+CHEI_CREDIT = ("credit", "intrari", "incasari", "incoming", "deposit")
+BIGRAME_DEBIT = ("paid out", "money out")
+BIGRAME_CREDIT = ("paid in", "money in")
 CHEI_SUMA = ("suma", "amount", "valoare")
 CHEI_IGNORATE = ("sold", "balance", "referinta", "valuta", "currency", "moneda")
 
@@ -228,9 +279,9 @@ def tranzactii_din_tabel(randuri: list) -> list:
 
 RE_SUMA = re.compile(r"^-?\d{1,3}(?:[.\s]\d{3})*,\d{2}$|^-?\d{1,3}(?:,\d{3})*\.\d{2}$|^-?\d+[.,]\d{2}$")
 RE_SUMA_TEXT = re.compile(r"-?\d{1,3}(?:[.\s]\d{3})*,\d{2}\b|-?\d+\.\d{2}\b")
-CUVINTE_INCASARE = ("incasare", "credit", "primit", "incoming", "transfer in")
+CUVINTE_INCASARE = ("incasare", "credit", "primit", "incoming", "transfer in", "received")
 # randuri de total/sold din extras care NU sunt tranzactii (au sume in coloane, dar sunt totaluri)
-CUVINTE_TOTAL = ("sold", "rulaj", "total", "sume blocate", "balance")
+CUVINTE_TOTAL = ("sold", "rulaj", "total", "sume blocate", "balance", "opening", "closing")
 
 
 def _linii_din_cuvinte(cuvinte: list, toleranta: float = 3) -> list:
@@ -259,9 +310,21 @@ def _linii_din_cuvinte(cuvinte: list, toleranta: float = 3) -> list:
 def _gaseste_coloane(linie: list) -> dict | None:
     """Daca linia e capul de tabel, intoarce pozitia (centrul x) coloanelor numerice."""
     coloane = {}
-    for w in linie:
+    for i, w in enumerate(linie):
         n = normalizeaza(w["text"])
         centru = (w["x0"] + w["x1"]) / 2
+        urm = linie[i + 1] if i + 1 < len(linie) else None
+        if urm and urm["x0"] - w["x1"] < 8:
+            bigrama = f"{n} {normalizeaza(urm['text'])}"
+            centru2 = (w["x0"] + urm["x1"]) / 2
+            if bigrama in BIGRAME_DEBIT:
+                coloane.setdefault("debit", centru2)
+                continue
+            if bigrama in BIGRAME_CREDIT:
+                coloane.setdefault("credit", centru2)
+                continue
+        if n in ("in", "out"):
+            continue  # a doua jumatate a unei bigrame
         if n.startswith(CHEI_DEBIT):
             coloane.setdefault("debit", centru)
         elif n.startswith(CHEI_CREDIT):
@@ -273,7 +336,8 @@ def _gaseste_coloane(linie: list) -> dict | None:
     if any(RE_SUMA.match(w["text"]) for w in linie):
         return None  # un cap de tabel nu contine sume
     if "debit" in coloane and "credit" in coloane:
-        coloane.pop("suma", None)
+        if "suma" in coloane:  # cu Debit + Credit separate, coloana "Amount" e soldul
+            coloane.setdefault("sold", coloane.pop("suma"))
         return coloane
     if "suma" in coloane and any(normalizeaza(w["text"]).startswith(CHEI_DATA) for w in linie):
         return coloane
@@ -298,8 +362,8 @@ def _tranzactii_pe_coloane(pagini: list) -> list:
 
             prag_stanga = min(coloane.values()) - 60  # sumele din descriere nu conteaza
             sume, text = {}, []
-            d = parseaza_data(linie[0]["text"]) if RE_DATA.fullmatch(linie[0]["text"]) else None
-            for w in (linie[1:] if d else linie):
+            d, n = _data_la_inceput(linie)
+            for w in linie[n:]:
                 centru = (w["x0"] + w["x1"]) / 2
                 if RE_SUMA.match(w["text"]) and centru >= prag_stanga:
                     col = min(coloane, key=lambda k: abs(coloane[k] - centru))
@@ -307,8 +371,6 @@ def _tranzactii_pe_coloane(pagini: list) -> list:
                 elif not (RE_DATA.fullmatch(w["text"]) and not text):
                     text.append(w["text"])
             text = " ".join(text)
-            if d:
-                data_curenta = d
 
             if normalizeaza(text).startswith(CUVINTE_TOTAL):
                 curenta = None  # sold / rulaj / total: nu e tranzactie
@@ -322,27 +384,45 @@ def _tranzactii_pe_coloane(pagini: list) -> list:
             elif sume.get("suma"):
                 suma, directie = sume["suma"], "incasare" if sume["suma"] > 0 else "plata"
 
-            if suma is not None and data_curenta:
-                curenta = Tranzactie(data_curenta, text, abs(suma), directie)
+            if suma is not None:
+                curenta = Tranzactie(d or data_curenta, text, abs(suma), directie,
+                                     data_provizorie=d is None)
                 tranzactii.append(curenta)
-            elif curenta is not None and text and not d:
-                curenta.descriere += " " + text  # detaliile de pe randurile urmatoare
+            elif curenta is not None:
+                if d and curenta.data_provizorie:
+                    # data e pe randul de sub descriere (ex. Wise: "31 August 2026 Transaction: ...")
+                    curenta.data, curenta.data_provizorie = d, False
+                if text:
+                    curenta.descriere += " " + text  # detaliile de pe randurile urmatoare
+            if d:
+                data_curenta = d
     return tranzactii
+
+
+def _data_la_inceput(linie: list) -> tuple:
+    """(data, cate cuvinte ocupa) daca linia incepe cu o data: '02.09.2026' sau '31 August 2026'."""
+    if RE_DATA.fullmatch(linie[0]["text"]):
+        return parseaza_data(linie[0]["text"]), 1
+    trei = " ".join(w["text"] for w in linie[:3])
+    m = RE_DATA_TEXT.match(trei)
+    if m and _data_din_text(m) and len(linie) >= 3:
+        return _data_din_text(m), 3
+    return None, 0
 
 
 def _tranzactii_din_text(linii: list) -> list:
     """Ultima varianta: o linie care incepe cu o data deschide o tranzactie."""
     tranzactii, blocuri = [], []
     for linie in linii:
-        if RE_DATA.match(linie.strip()):
+        if incepe_cu_data(linie):
             blocuri.append([linie.strip()])
         elif blocuri:
             blocuri[-1].append(linie.strip())
     for bloc in blocuri:
         text = " ".join(bloc)
-        if normalizeaza(RE_DATA.sub(" ", bloc[0])).startswith(CUVINTE_TOTAL):
+        if normalizeaza(sterge_date(bloc[0])).startswith(CUVINTE_TOTAL):
             continue
-        fara_date = [RE_DATA.sub(" ", x) for x in (bloc[0], text)]  # "01.09" nu e suma
+        fara_date = [sterge_date(x) for x in (bloc[0], text)]  # "01.09" nu e suma
         sume = RE_SUMA_TEXT.findall(fara_date[0]) or RE_SUMA_TEXT.findall(fara_date[1])
         if not sume:
             continue
@@ -406,136 +486,141 @@ def filtreaza(tranzactii: list, firma: Firma, directie: str) -> list:
 # Factura PDF
 # --------------------------------------------------------------------------
 
-def _inregistreaza_font():
-    """Font cu diacritice romanesti (ș, ț). Intoarce (normal, bold)."""
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    candidati = [
-        ("C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/arialbd.ttf"),
-        ("/Library/Fonts/Arial.ttf", "/Library/Fonts/Arial Bold.ttf"),
-        ("/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-        ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
-    ]
-    for normal, bold in candidati:
-        if Path(normal).exists() and Path(bold).exists():
-            pdfmetrics.registerFont(TTFont("FontF", normal))
-            pdfmetrics.registerFont(TTFont("FontF-Bold", bold))
-            return "FontF", "FontF-Bold", True
-    return "Helvetica", "Helvetica-Bold", False
+def format_en(x: Decimal) -> str:
+    """7900 -> '7,900.00' (ca pe factura Grow LLC)"""
+    return f"{rotunjeste(x):,.2f}"
 
 
-def calculeaza_linii(tranzactii: list, cfg: dict) -> tuple:
-    cota = Decimal(cfg.get("COTA_TVA", "21") or "0")
-    include_tva = cfg.get("SUMELE_INCLUD_TVA", "da").lower() in ("da", "yes", "1", "true")
-    sablon = cfg.get("DESCRIERE_LINIE", "Servicii conform plata din {data}")
-    linii = []
-    for t in sorted(tranzactii, key=lambda x: x.data or date.min):
-        if include_tva and cota:
-            baza = rotunjeste(t.suma / (1 + cota / 100))
-            tva = rotunjeste(t.suma) - baza
-        else:
-            baza = rotunjeste(t.suma)
-            tva = rotunjeste(baza * cota / 100)
-        denumire = sablon.format(data=t.data.strftime("%d.%m.%Y") if t.data else "-",
-                                 suma=format_ro(t.suma), detalii=t.descriere[:80])
-        linii.append((denumire, baza, tva))
-    total_baza = sum((l[1] for l in linii), Decimal(0))
-    total_tva = sum((l[2] for l in linii), Decimal(0))
-    return linii, cota, total_baza, total_tva
+def data_en(d: date) -> str:
+    return f"{LUNI_EN[d.month - 1]} {d.day}, {d.year}"
 
 
-def genereaza_factura(cale_pdf: Path, firma: Firma, tranzactii: list, cfg: dict,
-                      serie: str, numar: int, data_factura: date):
-    from reportlab.lib import colors
+def perioada_serviciu(t: Tranzactie, cfg: dict) -> tuple:
+    """Luna facturata pentru o plata: luna platii sau (LUNA_SERVICIU=anterioara) luna dinainte."""
+    an, luna = t.data.year, t.data.month
+    if cfg.get("LUNA_SERVICIU", "aceeasi").lower().startswith("anterio"):
+        an, luna = (an - 1, 12) if luna == 1 else (an, luna - 1)
+    return an, luna
+
+
+def ultima_zi(an: int, luna: int) -> date:
+    urm = date(an + 1, 1, 1) if luna == 12 else date(an, luna + 1, 1)
+    return date.fromordinal(urm.toordinal() - 1)
+
+
+def _ascii_sigur(text: str) -> str:
+    """Helvetica (fontul facturii Grow) nu are ș/ț/ă: le scriem fara diacritice."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text or "") if not unicodedata.combining(c))
+
+
+def genereaza_factura(cale_pdf: Path, firma: Firma, linii: list, cfg: dict,
+                      numar: str, data_factura: date) -> Decimal:
+    """
+    Factura in formatul Grow LLC (A4, Helvetica, albastru #0F4C81).
+    linii = [(descriere, perioada, suma), ...]
+    """
+    from reportlab.lib.colors import HexColor, white
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.pdfgen import canvas
 
-    font, font_b, are_diacritice = _inregistreaza_font()
-
-    def t(x: str) -> str:
-        x = x or ""
-        if not are_diacritice:
-            x = "".join(c for c in unicodedata.normalize("NFKD", x) if not unicodedata.combining(c))
-        return x.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    st = ParagraphStyle("n", fontName=font, fontSize=9, leading=12)
-    st_b = ParagraphStyle("b", parent=st, fontName=font_b)
-    st_titlu = ParagraphStyle("t", fontName=font_b, fontSize=18, leading=22)
-    moneda = cfg.get("MONEDA", "RON")
-
-    linii, cota, total_baza, total_tva = calculeaza_linii(tranzactii, cfg)
+    W, H = A4
+    ALBASTRU, NEGRU = HexColor("#0F4C81"), HexColor("#1A1A1A")
+    GRI, LINIE, FUNDAL = HexColor("#5F6368"), HexColor("#D5D5D5"), HexColor("#F2F5F8")
+    moneda = cfg.get("MONEDA", "EUR")
+    furnizor = cfg.get("FURNIZOR_NUME", "Grow LLC")
     zile = int(cfg.get("ZILE_SCADENTA", "0") or 0)
     scadenta = date.fromordinal(data_factura.toordinal() + zile)
+    total = sum((s for _, _, s in linii), Decimal(0))
 
-    elemente = [
-        Paragraph(t("FACTURĂ"), st_titlu),
-        Paragraph(t(f"Seria {serie} nr. {numar:04d}   ·   Data: {data_factura:%d.%m.%Y}"
-                    f"   ·   Scadență: {scadenta:%d.%m.%Y}").replace("   ", "&nbsp;&nbsp;&nbsp;"), st),
-        Spacer(1, 8 * mm),
-    ]
+    c = canvas.Canvas(str(cale_pdf), pagesize=A4)
+    c.setTitle(f"Invoice {numar}")
+    c.setAuthor(furnizor)
 
-    furnizor = [
-        Paragraph(t("FURNIZOR"), st_b),
-        Paragraph(t(cfg.get("FURNIZOR_NUME", "")), st_b),
-        Paragraph(t(f"CUI: {cfg.get('FURNIZOR_CUI', '')}"), st),
-        Paragraph(t(f"Reg. Com.: {cfg.get('FURNIZOR_REG_COM', '')}"), st),
-        Paragraph(t(cfg.get("FURNIZOR_ADRESA", "")), st),
-        Paragraph(t(f"IBAN: {cfg.get('FURNIZOR_IBAN', '')}"), st),
-        Paragraph(t(f"Banca: {cfg.get('FURNIZOR_BANCA', '')}"), st),
-    ]
-    client = [
-        Paragraph(t("CLIENT"), st_b),
-        Paragraph(t(firma.nume), st_b),
-        Paragraph(t(f"CUI: {firma.cui}"), st),
-        Paragraph(t(firma.adresa), st),
-    ]
-    parti = Table([[furnizor, client]], colWidths=[95 * mm, 85 * mm])
-    parti.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
-    elemente += [parti, Spacer(1, 8 * mm)]
+    def scrie(x, top, text, marime=9.5, bold=False, culoare=NEGRU, dreapta=False):
+        # 'top' = distanta de la marginea de sus a paginii pana la varful textului
+        font = "Helvetica-Bold" if bold else "Helvetica"
+        c.setFont(font, marime)
+        c.setFillColor(culoare)
+        text = _ascii_sigur(text)
+        y = H - top - marime * 0.793
+        (c.drawRightString if dreapta else c.drawString)(x, y, text)
+        return stringWidth(text, font, marime)
 
-    date_tabel = [[Paragraph(t(h), st_b) for h in
-                   ("Nr.", "Denumire", "U.M.", "Cant.", f"Preț unitar ({moneda})",
-                    f"Valoare ({moneda})", f"TVA {cota}%")]]
-    for i, (denumire, baza, tva) in enumerate(linii, 1):
-        date_tabel.append([str(i), Paragraph(t(denumire), st), t(cfg.get("UM", "buc")), "1",
-                           format_ro(baza), format_ro(baza), format_ro(tva)])
-    tabel = Table(date_tabel, colWidths=[10 * mm, 66 * mm, 13 * mm, 14 * mm, 26 * mm, 26 * mm, 25 * mm],
-                  repeatRows=1)
-    tabel.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8ECF1")),
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#9AA5B1")),
-        ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]))
-    elemente += [tabel, Spacer(1, 5 * mm)]
+    def dreptunghi(x, top, lat, inalt, culoare):
+        c.setFillColor(culoare)
+        c.rect(x, H - top - inalt, lat, inalt, stroke=0, fill=1)
 
-    totaluri = Table([
-        [t("Total fără TVA:"), f"{format_ro(total_baza)} {moneda}"],
-        [t(f"TVA {cota}%:"), f"{format_ro(total_tva)} {moneda}"],
-        [t("TOTAL DE PLATĂ:"), f"{format_ro(total_baza + total_tva)} {moneda}"],
-    ], colWidths=[45 * mm, 40 * mm], hAlign="RIGHT")
-    totaluri.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font),
-        ("FONTNAME", (0, 2), (-1, 2), font_b),
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-        ("LINEABOVE", (0, 2), (-1, 2), 0.8, colors.black),
-    ]))
-    elemente.append(totaluri)
+    def linie_oriz(x0, x1, top, culoare, grosime):
+        c.setStrokeColor(culoare)
+        c.setLineWidth(grosime)
+        c.line(x0, H - top, x1, H - top)
 
-    if cfg.get("MENTIUNI"):
-        elemente += [Spacer(1, 10 * mm), Paragraph(t(cfg["MENTIUNI"]), st)]
+    def eticheta_valoare(top, eticheta, valoare):
+        lat = stringWidth(_ascii_sigur(valoare), "Helvetica-Bold", 9)
+        scrie(539, top, valoare, 9, bold=True, dreapta=True)
+        scrie(539 - lat, top, eticheta + " ", 9, culoare=GRI, dreapta=True)
 
-    SimpleDocTemplate(str(cale_pdf), pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
-                      topMargin=15 * mm, bottomMargin=15 * mm,
-                      title=f"Factura {serie} {numar:04d}").build(elemente)
-    return total_baza + total_tva
+    # --- antet
+    scrie(57, 65, furnizor, 22, bold=True, culoare=ALBASTRU)
+    scrie(539, 64, "INVOICE", 17, bold=True, dreapta=True)
+    scrie(57, 91, cfg.get("FURNIZOR_LOCALITATE", ""), 9.5, culoare=GRI)
+    eticheta_valoare(91, "No.", numar)
+    eticheta_valoare(104, "Issue date:", data_en(data_factura))
+    eticheta_valoare(117, "Due date:", data_en(scadenta))
+    dreptunghi(57, 148, 482, 1, ALBASTRU)
+
+    # --- de la / catre
+    scrie(57, 173, "INVOICE FROM", 7.5, bold=True, culoare=GRI)
+    scrie(57, 191, furnizor, 11, bold=True)
+    for i, rand in enumerate(r.strip() for r in cfg.get("FURNIZOR_RANDURI", "").split("|") if r.strip()):
+        scrie(57, 205 + i * 13.7, rand, culoare=GRI)
+
+    randuri_client = [r.strip() for r in firma.adresa.split(";") if r.strip()]
+    if firma.cui:
+        randuri_client.append(f"VAT / CUI: {firma.cui}")
+    if firma.reg_com:
+        randuri_client.append(f"Trade Register: {firma.reg_com}")
+    scrie(320, 173, "INVOICE TO", 7.5, bold=True, culoare=GRI)
+    scrie(320, 191, firma.nume, 11, bold=True)
+    for i, rand in enumerate(randuri_client):
+        scrie(320, 205 + i * 13.7, rand, culoare=GRI)
+    jos = max(len(randuri_client), 4) - 4  # o adresa mai lunga impinge tabelul in jos
+    d = jos * 13.7
+
+    # --- tabel
+    dreptunghi(57, 289 + d, 482, 20, ALBASTRU)
+    scrie(63, 295 + d, "DESCRIPTION", 8.5, bold=True, culoare=white)
+    scrie(304, 295 + d, "PERIOD", 8.5, bold=True, culoare=white)
+    scrie(533, 295 + d, f"AMOUNT ({moneda})", 8.5, bold=True, culoare=white, dreapta=True)
+    for i, (descriere, perioada, suma) in enumerate(linii):
+        top = 318 + d + i * 24
+        scrie(63, top, descriere)
+        scrie(304, top, perioada)
+        scrie(533, top, format_en(suma), dreapta=True)
+        linie_oriz(57, 539, top + 18, LINIE, 0.5)
+    d += (len(linii) - 1) * 24
+
+    # --- totaluri
+    scrie(269, 355 + d, "Subtotal")
+    scrie(527, 355 + d, f"{format_en(total)} {moneda}", dreapta=True)
+    dreptunghi(263, 371 + d, 270, 26, FUNDAL)
+    linie_oriz(263, 533, 371 + d, NEGRU, 0.8)
+    scrie(269, 379 + d, "Total", 12, bold=True)
+    scrie(527, 379 + d, f"{format_en(total)} {moneda}", 12, bold=True, dreapta=True)
+
+    # --- plata
+    scrie(63, 433 + d, "PAYMENT DETAILS", 7.5, bold=True, culoare=GRI)
+    scrie(63, 450 + d, f"Beneficiary: {cfg.get('BENEFICIAR', furnizor)}")
+    scrie(63, 463 + d, f"IBAN: {cfg.get('IBAN', '')}  •  SWIFT/BIC: {cfg.get('SWIFT', '')}"
+                       f"  •  Currency: {moneda}")
+    scrie(63, 485 + d, f"Payment terms: bank transfer, {moneda}. "
+                       f"Please quote invoice number {numar} as reference.")
+    scrie(63, 538 + d, cfg.get("SUBSOL", furnizor), 8, bold=True)
+
+    c.showPage()
+    c.save()
+    return total
 
 
 def scrie_rezumat(cale_csv: Path, tranzactii: list):
@@ -544,17 +629,17 @@ def scrie_rezumat(cale_csv: Path, tranzactii: list):
         w.writerow(["Data", "Directie", "Suma", "Descriere din extras"])
         for t in sorted(tranzactii, key=lambda x: x.data or date.min):
             w.writerow([t.data.strftime("%d.%m.%Y") if t.data else "", t.directie,
-                        format_ro(t.suma), t.descriere])
+                        format_en(t.suma), t.descriere])
 
 
 # --------------------------------------------------------------------------
-# Stare (ce extrase au fost procesate, ultimul numar de factura)
+# Stare (ce extrase au fost deja procesate)
 # --------------------------------------------------------------------------
 
 class Stare:
-    def __init__(self, cale: Path, numar_start: int):
+    def __init__(self, cale: Path):
         self.cale = cale
-        self.date = {"numar_urmator": numar_start, "procesate": {}}
+        self.date = {"procesate": {}}
         if cale.exists():
             self.date.update(json.loads(cale.read_text(encoding="utf-8")))
 
@@ -572,58 +657,74 @@ class Stare:
     def marcheaza(self, cale: Path):
         self.date["procesate"][cale.name] = self.amprenta(cale)
 
-    def ia_numar(self) -> int:
-        n = self.date["numar_urmator"]
-        self.date["numar_urmator"] = n + 1
-        return n
-
 
 # --------------------------------------------------------------------------
 # Bucla agentului
 # --------------------------------------------------------------------------
 
-def nume_fisier_sigur(text: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_-]+", "_", normalizeaza(text)).strip("_")[:40] or "firma"
+def facturi_pe_luni(gasite: list, cfg: dict) -> dict:
+    """{(an, luna): [tranzactii]} - o factura pe luna, ca GROW-2026-08."""
+    luni = {}
+    for t in gasite:
+        if t.data is None:
+            log.warning("  Plata fara data, sarita: %s %s", format_en(t.suma), t.descriere[:60])
+            continue
+        luni.setdefault(perioada_serviciu(t, cfg), []).append(t)
+    return dict(sorted(luni.items()))
 
 
-def proceseaza_extras(cale: Path, firme: list, cfg: dict, stare: Stare):
-    log.info("Extras nou: %s", cale.name)
+def proceseaza_extras(cale: Path, firme: list, cfg: dict, stare: Stare) -> list:
+    """Intoarce lista facturilor create."""
+    log.info("Extras: %s", cale.name)
     try:
         tranzactii = citeste_extras(cale)
     except Exception as e:  # un extras stricat nu trebuie sa opreasca agentul
         log.error("Nu am putut citi %s: %s", cale.name, e)
-        return
+        return []
     log.info("  %d tranzactii citite", len(tranzactii))
     if not tranzactii:
         log.warning("  Nu am recunoscut nicio tranzactie. Trimite-mi PDF-ul ca sa adaug formatul bancii tale.")
 
     directie = cfg.get("DIRECTIE", "incasare").lower()
-    serie = cfg.get("SERIE", "FCT")
+    sablon_numar = cfg.get("NUMAR_FACTURA", "GROW-{an}-{luna}")
+    create = []
     for firma in firme:
         gasite = filtreaza(tranzactii, firma, directie)
         if not gasite:
             log.info("  %s: nicio tranzactie (%s)", firma.nume, directie)
             continue
-        numar = stare.ia_numar()
-        baza = f"Factura_{serie}{numar:04d}_{nume_fisier_sigur(firma.nume)}_{cale.stem}"
-        total = genereaza_factura(cale.parent / f"{baza}.pdf", firma, gasite, cfg,
-                                  serie, numar, date.today())
-        scrie_rezumat(cale.parent / f"{baza}_plati.csv", gasite)
-        log.info("  %s: %d tranzactii -> %s.pdf (total %s %s)",
-                 firma.nume, len(gasite), baza, format_ro(total), cfg.get("MONEDA", "RON"))
+        for (an, luna), plati in facturi_pe_luni(gasite, cfg).items():
+            numar = sablon_numar.format(an=an, luna=f"{luna:02d}")
+            cale_pdf = cale.parent / f"Invoice_{re.sub(r'[^A-Za-z0-9]', '', numar)}.pdf"
+            if cale_pdf.exists():
+                log.warning("  %s exista deja - nu o suprascriu. Sterge-o daca vrei s-o refaci.",
+                            cale_pdf.name)
+                continue
+            if cfg.get("DATA_FACTURA", "sfarsit_luna").lower() == "azi":
+                data_factura = date.today()
+            else:
+                data_factura = ultima_zi(an, luna)
+            linie = (cfg.get("DESCRIERE_LINIE", "IT services & marketing services"),
+                     f"{LUNI_EN[luna - 1]} {an}", sum((t.suma for t in plati), Decimal(0)))
+            total = genereaza_factura(cale_pdf, firma, [linie], cfg, numar, data_factura)
+            scrie_rezumat(cale_pdf.with_name(cale_pdf.stem + "_plati.csv"), plati)
+            log.info("  %s: %d plati -> %s (total %s %s)", firma.nume, len(plati), cale_pdf.name,
+                     format_en(total), cfg.get("MONEDA", "EUR"))
+            create.append(cale_pdf)
     stare.marcheaza(cale)
     stare.salveaza()
+    return create
 
 
 def extrase_noi(folder: Path, stare: Stare) -> list:
     return sorted(p for p in folder.iterdir()
                   if p.is_file() and p.suffix.lower() in EXTENSII
-                  and not p.name.startswith(("Factura_", "~$", "."))
+                  and not p.name.startswith(("Invoice_", "Factura_", "~$", "."))
                   and not stare.e_procesat(p))
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Agent: extrase bancare -> facturi")
+    ap = argparse.ArgumentParser(description="Agent: extrase bancare PDF -> facturi Grow LLC")
     ap.add_argument("--folder", help="folderul urmarit (implicit: FOLDER din config.txt)")
     ap.add_argument("--config", default=str(BAZA / "config.txt"))
     ap.add_argument("--firme", default=str(BAZA / "firme.txt"))
@@ -634,15 +735,22 @@ def main():
                         handlers=[logging.StreamHandler(sys.stdout),
                                   logging.FileHandler(BAZA / "agent.log", encoding="utf-8")])
 
+    for cale in (Path(args.config), Path(args.firme)):
+        model = cale.with_name(cale.stem + ".exemplu" + cale.suffix)
+        if not cale.exists() and model.exists():
+            shutil.copy(model, cale)
+            log.warning("Am creat %s din model - completeaza-l cu datele tale reale.", cale.name)
+
     cfg = citeste_config(Path(args.config))
     folder = Path(args.folder or cfg.get("FOLDER", "extrase"))
     if not folder.is_absolute():
         folder = BAZA / folder
     folder.mkdir(parents=True, exist_ok=True)
-    stare = Stare(folder / ".stare_agent.json", int(cfg.get("NUMAR_START", "1")))
+    stare = Stare(folder / ".stare_agent.json")
     interval = float(cfg.get("INTERVAL_SECUNDE", "5"))
 
     log.info("Agent pornit. Urmaresc folderul: %s", folder)
+    create = []
     marimi = {}  # asteptam ca fisierul sa nu mai creasca (copiere terminata)
     while True:
         firme = citeste_firme(Path(args.firme))  # recitit mereu: poti edita firme.txt din mers
@@ -656,8 +764,10 @@ def main():
                 continue
             marimi.pop(cale, None)
             if firme:
-                proceseaza_extras(cale, firme, cfg, stare)
+                create += proceseaza_extras(cale, firme, cfg, stare)
         if args.o_data:
+            if not create:
+                log.info("Nicio factura noua. Ai pus extrasul PDF in %s ?", folder)
             break
         time.sleep(interval)
 

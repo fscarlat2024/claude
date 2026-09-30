@@ -1,0 +1,39 @@
+# ===== MODEL de configurare (format Grow LLC) =====
+# La prima rulare agentul il copiaza in config.txt. Completeaza acolo EIN, IBAN si numele tau.
+# config.txt NU se urca pe GitHub (e in .gitignore), ca sa nu devina publice.
+# Linii de forma CHEIE=valoare. Ce incepe cu # e comentariu.
+
+# Folderul in care pui extrasele PDF (relativ la acest folder sau cale completa,
+# ex: C:\Users\Nume\Documents\Extrase). Factura apare in acelasi folder.
+FOLDER=extrase
+INTERVAL_SECUNDE=5
+
+# Ce tranzactii intra pe factura, pentru firmele din firme.txt:
+#   incasare = banii primiti DE LA firma (implicit)
+#   plata    = banii trimisi CATRE firma
+#   toate    = ambele
+DIRECTIE=incasare
+
+# ----- Furnizor (Grow LLC) -----
+FURNIZOR_NUME=Grow LLC
+FURNIZOR_LOCALITATE=Lewes, Delaware, United States
+# randurile de sub "INVOICE FROM", separate prin |
+FURNIZOR_RANDURI=16192 Coastal Highway|Lewes, DE 19958, United States|Delaware LLC  •  EIN XX-XXXXXXX|Nume Prenume, Member
+
+# ----- Plata (PAYMENT DETAILS) -----
+BENEFICIAR=Grow LLC  •  Wise, 30 W 26th Street, Floor 6, New York, NY 10010, United States
+IBAN=BE00 0000 0000 0000
+SWIFT=TRWIBEB1XXX
+MONEDA=EUR
+SUBSOL=Grow LLC  •  EIN XX-XXXXXXX  •  Delaware, United States
+
+# ----- Factura -----
+# O factura pe luna. {an} si {luna} vin din data platilor -> GROW-2026-08, fisier Invoice_GROW202608.pdf
+NUMAR_FACTURA=GROW-{an}-{luna}
+DESCRIERE_LINIE=IT services & marketing services
+# aceeasi  = plata din august -> factura pe August (implicit)
+# anterioara = plata din septembrie -> factura pe August
+LUNA_SERVICIU=aceeasi
+# sfarsit_luna = data facturii e ultima zi a lunii (ex. August 31, 2026); azi = data de azi
+DATA_FACTURA=sfarsit_luna
+ZILE_SCADENTA=0

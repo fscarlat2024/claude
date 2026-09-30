@@ -1,0 +1,10 @@
+# Firma (sau firmele) catre care emiti factura.
+# Fiecare firma incepe cu NUME=. ADRESA: randurile separate prin ;
+# ALIAS: alte denumiri sub care apare firma in extras (separate prin virgula).
+# CUI-ul e cautat si el in descrierea platii.
+
+NUME=NET COMMUNICATIONS SYSTEMS SRL
+CUI=RO34291656
+REG_COM=J40/3729/2015
+ADRESA=Str. Samuil Vulcan 12D, corp A, et. 2, ap. birou 13; Sector 5, Bucharest 077160, Romania
+ALIAS=NET COMMUNICATION SYSTEMS, NET COMMUNICATIONS, NETCOM SYSTEMS

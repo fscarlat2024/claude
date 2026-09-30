@@ -1,3 +1,7 @@
 extrase/
 agent.log
 __pycache__/
+.pytest_cache/
+# date reale (IBAN, EIN) - raman doar pe calculatorul tau
+config.txt
+firme.txt

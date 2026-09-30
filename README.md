@@ -1,63 +1,52 @@
-# Agent facturi din extrase bancare
+# Agent facturi Grow LLC din extrase bancare
 
-Pui un extras bancar într-un folder, iar agentul găsește singur toate tranzacțiile
-cu firmele din `firme.txt` și îți face factura PDF în același folder.
+Pui extrasul PDF în folderul `extrase`, rulezi `Genereaza-Factura.ps1`, iar agentul scrie
+lângă extras factura Grow LLC către NET COMMUNICATIONS SYSTEMS SRL, în același format ca
+`Invoice_GROW202608.pdf`.
 
 ```
 extrase/
-  extras_BT_septembrie.pdf                              <- îl pui tu (PDF)
-  Factura_FCT0001_alfa_tech_extras_BT_septembrie.pdf    <- apare automat
-  Factura_FCT0001_alfa_tech_extras_BT_septembrie_plati.csv  <- lista plăților găsite, ca să verifici
+  extras_wise_septembrie.pdf           <- îl pui tu
+  Invoice_GROW202608.pdf               <- apare automat (plățile din august)
+  Invoice_GROW202608_plati.csv         <- plățile găsite, ca să verifici
+  Invoice_GROW202609.pdf               <- plățile din septembrie
+  Invoice_GROW202609_plati.csv
 ```
 
-## Pornire (o singură dată)
+## Prima dată
 
-1. Instalează Python 3.10+ (pe Windows bifează „Add Python to PATH”).
-2. Completează **`config.txt`** cu datele firmei tale (CUI, IBAN, serie factură, TVA).
-3. Scrie firmele în **`firme.txt`**, câte una pe linie:
-   ```
-   Alfa Tech SRL | RO11223344 | Str. Florilor 10, Cluj | ALFATECH
-   ```
-   (nume | CUI | adresă | alte denumiri sub care apare în extras)
-4. Dublu-click pe **`porneste_agent.bat`** (Windows) sau rulează `./porneste_agent.sh` (Mac/Linux).
+1. Instalează Python 3.10+ de pe python.org (bifează „Add Python to PATH”).
+2. Copiază `config.exemplu.txt` ca `config.txt` și `firme.exemplu.txt` ca `firme.txt`
+   (sau rulează o dată scriptul, care le creează singur), apoi completează în `config.txt`
+   **EIN-ul, IBAN-ul și numele tău**.
+   `config.txt` și `firme.txt` nu se urcă pe GitHub (repo-ul e public).
 
-Cât timp fereastra e deschisă, agentul verifică folderul la fiecare 5 secunde.
-Poți modifica `firme.txt` din mers, fără repornire.
+## De fiecare dată
+
+1. Pui extrasul PDF în folderul `extrase`.
+2. Click dreapta pe **`Genereaza-Factura.ps1`** → **Run with PowerShell**.
+3. Factura se deschide singură și rămâne salvată lângă extras.
+
+Dacă Windows blochează scriptul („running scripts is disabled”), rulează o dată în PowerShell:
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+sau pornește-l așa: `powershell -ExecutionPolicy Bypass -File Genereaza-Factura.ps1`.
+
+## Ce face
+
+- Ia din extras **încasările** de la NET COMMUNICATIONS SYSTEMS (după nume, alias-uri sau CUI).
+  Alte tranzacții (carduri, abonamente etc.) sunt ignorate.
+- Face **o factură pe lună**: toate plățile NCS dintr-o lună intră într-un singur rând
+  „IT services & marketing services | August 2026”, numerotat `GROW-2026-08`, cu data
+  facturii în ultima zi a lunii (se poate schimba în `config.txt`).
+- Dacă plata din septembrie e pentru august, pune în `config.txt`: `LUNA_SERVICIU=anterioara`.
+- Nu suprascrie niciodată o factură existentă. Ca s-o refaci, șterge PDF-ul și rulează din nou.
+- Un extras e procesat o singură dată (reținut în `extrase/.stare_agent.json`).
 
 ## Ce extrase înțelege
 
-Doar **PDF** – extrasul descărcat din internet banking (BT, BCR, ING, BRD, Raiffeisen etc.).
-Fișierele CSV/Excel din folder sunt ignorate.
+Doar **PDF** descărcat din aplicația băncii (Wise, BT, BCR, ING, Revolut etc.), nu scanat.
+Citește coloanele după poziție: suma de sub „Incoming/Credit” e încasare, cea de sub
+„Outgoing/Debit” e plată, iar cea de sub „Amount/Balance/Sold” e ignorată. Înțelege și date
+scrise cu litere („31 August 2026”). La primul extras dintr-o bancă nouă verifică `_plati.csv`.
 
-Agentul încearcă 3 metode, în ordine, și o folosește pe prima care merge:
-
-1. **tabel cu chenare** – PDF-uri cu linii de tabel;
-2. **coloane după poziție** – extrasele obișnuite, fără chenare: o sumă aflată sub „Credit” e
-   încasare, una sub „Debit” e plată, cea de sub „Sold” e ignorată. Merge și când data apare doar
-   la prima tranzacție din zi și când detaliile plății sunt pe mai multe rânduri;
-3. **text simplu** – ultima variantă, mai puțin precisă.
-
-Rândurile „SOLD”, „RULAJ ZI”, „TOTAL” sunt sărite (au sume, dar nu sunt tranzacții).
-
-Nu merge pe **PDF-uri scanate** (poze) – agentul te anunță în fereastră. Descarcă extrasul
-direct din aplicația băncii. Verifică mereu `_plati.csv` la primele extrase dintr-o bancă nouă.
-
-Test pe extrasul de exemplu: copiază `exemple/extras_BT_septembrie.pdf` în `extrase/`.
-
-## Cum recunoaște firma
-
-- după nume (fără diacritice, fără „SRL/SA”, fără puncte: „Alfa Tech S.R.L.” = „ALFA TECH SRL”)
-- după CUI, dacă apare în descrierea plății
-- după „alte denumiri” din `firme.txt` (pentru când banca scrie „ALFATECH”)
-
-`DIRECTIE` din `config.txt` alege ce tranzacții intră: `incasare` (bani primiți de la firmă,
-implicit), `plata` (bani trimiși către firmă) sau `toate`.
-
-## Important
-
-- Factura PDF **nu înlocuiește e-Factura** (RO e-Factura/SPV ANAF, obligatorie în B2B).
-  Folosește PDF-ul ca document intern / de verificare sau emite factura oficială din
-  programul tău de facturare.
-- Teste: `python -m pytest teste` (generează extrase PDF de probă și verifică citirea).
-- Un extras e procesat o singură dată (ținut minte în `extrase/.stare_agent.json`, tot acolo e
-  și numărul următoarei facturi). Dacă vrei să-l reprocesezi, șterge linia lui din acel fișier.
+Teste: `python -m pytest teste`.
