@@ -1,7 +1,8 @@
 # Pune extrasul PDF in folderul "extrase", apoi: click dreapta pe acest fisier -> "Run with PowerShell".
 # Scriptul citeste extrasele noi, scrie factura Grow LLC langa extras si o deschide.
 
-$ErrorActionPreference = "Stop"
+# "Continue": in Windows PowerShell 5.1, cu "Stop", orice mesaj pe stderr al lui Python opreste scriptul
+$ErrorActionPreference = "Continue"
 Set-Location -Path $PSScriptRoot
 
 # Python: lansatorul "py" sau "python"
@@ -16,10 +17,16 @@ if (-not $python) {
 }
 
 # Bibliotecile necesare (doar prima data dureaza)
-& $python -c "import reportlab, pdfplumber" 2>$null
+& $python -c "import reportlab, pdfplumber" 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Instalez bibliotecile necesare (o singura data)..."
-    & $python -m pip install -q -r requirements.txt
+    Write-Host "Instalez bibliotecile necesare (o singura data, dureaza un minut)..."
+    & $python -m pip install -q -r requirements.txt 2>&1 | Out-Host
+    & $python -c "import reportlab, pdfplumber" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Nu am putut instala bibliotecile. Ruleaza manual: $python -m pip install -r requirements.txt" -ForegroundColor Red
+        Read-Host "Apasa Enter ca sa inchizi"
+        exit 1
+    }
 }
 
 $inainte = @(Get-ChildItem -Path . -Recurse -Filter "Invoice_*.pdf" | ForEach-Object FullName)
